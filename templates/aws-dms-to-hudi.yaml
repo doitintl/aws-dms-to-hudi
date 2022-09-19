@@ -1,0 +1,483 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Template for creating the AWS DMS to Hudi Infrastructure and Pipeline
+
+Parameters:
+  VpcSubnetIds:
+    Type: String
+    Description: >
+      Comma separated list of two existing private subnets this stack will run in.
+
+  DatabaseSecret:
+    Type: String
+    Description: >
+      The AWS Secrets Manager secret that contains the database info, the following properties are expected:
+        {
+          "username": "<username>",
+          "password": "<password>",
+          "engine": "<mysql | oracle | postgres | mariadb | aurora | aurora-postgresql | sqlserver>",
+          "host": "<db hostname>",
+          "port": <db port>,
+          "dbname": "<db name>"
+        }
+
+
+  DatabaseSchema:
+    Type: String
+    Description: The schema inside the source database to be migrated
+    Default: public
+
+  DmsDbCertificateArn:
+    Type: String
+    Description: >
+      The AWS DMS Certificate arn used if encryption in transit with ca verification is required, if unset then
+      'require' mode will be used with no ca verification
+    Default: ''
+
+  DmsDbExtraConnectionAttributes:
+    Type: String
+    Description: Extra connection attributes for the AWS DMS Endpoint, default assumes postgres
+    Default: captureDDLs=N;pluginName=PGLOGICAL;heartbeatEnable=true;heartbeatSchema=awsdms
+
+  DmsS3ExtraConnectionAttributes:
+    Type: String
+    Description: Extra connection attributes for the AWS DMS S3 Endpoint, default uses parquet with date partioning
+    Default: dataFormat=parquet;datePartitionEnabled=true;datePartitionDelimiter=NONE;parquetTimestampInMillisecond=true;cdcMinFileSize=131072;cdcMaxBatchInterval=180;
+
+  ReplicationInstanceClass:
+    Type: String
+    Description: The replication instance class
+    Default: dms.r5.large
+
+  ReplicationInstanceStorage:
+    Type: Number
+    Description: The size (in GB) of the replication instance local storage
+    Default: 100
+
+  GlueDatabaseName:
+    Type: String
+    Description: The name of the glue database
+    Default: 'default'
+
+  CreateReplicationTask:
+    Type: String
+    Description: Whether to create the replication instance and task or not, can be set to FALSE in order to reduce running infrastructure
+    AllowedValues: [ 'TRUE', 'FALSE' ]
+    Default: 'TRUE'
+
+Conditions:
+  SslCaVerification: !Not [!Equals [ !Ref DmsDbCertificateArn, '' ]]
+  CreateReplicationTask: !Equals [ !Ref CreateReplicationTask, 'TRUE' ]
+
+Resources:
+  DmsSubnetGroup:
+    Type: AWS::DMS::ReplicationSubnetGroup
+    Properties:
+      ReplicationSubnetGroupDescription: Replication group for private subnets A and B
+      SubnetIds:
+        - !Select [ 0, !Split [ ',', !Ref VpcSubnetIds ] ]
+        - !Select [ 1, !Split [ ',', !Ref VpcSubnetIds ] ]
+
+  DmsDbEndpoint:
+    Type: AWS::DMS::Endpoint
+    Properties:
+      ResourceIdentifier: !Sub '${AWS::StackName}-db-endpoint'
+      CertificateArn: !If [ SslCaVerification, !Ref DmsDbCertificateArn, !Ref AWS::NoValue ]
+      DatabaseName: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:dbname}}'
+      EndpointType: source
+      EngineName: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:engine}}'
+      ExtraConnectionAttributes: !Ref DmsDbExtraConnectionAttributes
+      Password: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      Port: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:port}}'
+      ServerName: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:host}}'
+      SslMode: !If [ SslCaVerification, 'verify-ca', 'require' ]
+      Username: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}'
+
+  RawDataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Description: Bucket for raw data
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: TRUE
+        BlockPublicPolicy: TRUE
+        IgnorePublicAcls: TRUE
+        RestrictPublicBuckets: TRUE
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      VersioningConfiguration:
+        Status: Suspended                          # Warning: Should be enabled if deployed in Production
+
+  CuratedDataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Description: Bucket for curated data
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: TRUE
+        BlockPublicPolicy: TRUE
+        IgnorePublicAcls: TRUE
+        RestrictPublicBuckets: TRUE
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      VersioningConfiguration:
+        Status: Suspended                          # Warning: Should be enabled if deployed in Production
+
+  DmsS3EndpointRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [ "dms.amazonaws.com" ]
+            },
+            "Action": [ "sts:AssumeRole" ]
+          }
+        ]
+      }
+      Description: Role for DMS to Assume when writing to S3
+      Policies:
+        - PolicyName: DMS-S3
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ListAll
+                Effect: Allow
+                Action:
+                  - s3:ListAllMybuckets
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::*'
+              - Sid: ListBucket
+                Effect: Allow
+                Action:
+                  - s3:List*
+                  - s3:Get*
+                Resource:
+                  - !GetAtt RawDataBucket.Arn
+              - Sid: S3ObjectAccess
+                Effect: Allow
+                Action:
+                  - s3:*Object*
+                Resource:
+                  - !Join [ '/', [ !GetAtt RawDataBucket.Arn, !Ref AWS::StackName ]]
+                  - !Join [ '/', [ !GetAtt RawDataBucket.Arn, !Ref AWS::StackName, '' ]]
+                  - !Join [ '/', [ !GetAtt RawDataBucket.Arn, !Ref AWS::StackName, '*' ]]
+
+  DmsS3Endpoint:
+    Type: AWS::DMS::Endpoint
+    Properties:
+      EndpointType: target
+      EngineName: s3
+      ResourceIdentifier: !Sub '${AWS::StackName}-s3-endpoint'
+      S3Settings:
+        BucketName: !Ref RawDataBucket
+        BucketFolder: !Sub '${AWS::StackName}/'
+        ServiceAccessRoleArn: !GetAtt DmsS3EndpointRole.Arn
+        CompressionType: gzip
+      ExtraConnectionAttributes: !Ref DmsS3ExtraConnectionAttributes
+
+  ReplicationInstance:
+    Type: AWS::DMS::ReplicationInstance
+    Condition: CreateReplicationTask
+    Properties:
+      ReplicationInstanceIdentifier: !Sub '${AWS::StackName}-instance'
+      ResourceIdentifier: !Sub '${AWS::StackName}-instance'
+      AllocatedStorage: !Ref ReplicationInstanceStorage
+      AllowMajorVersionUpgrade: FALSE
+      AutoMinorVersionUpgrade: TRUE
+      EngineVersion: 3.4.7
+      #  This will use the default aws managed dms encryption key
+      KmsKeyId: !Ref AWS::NoValue
+      MultiAZ: FALSE  # Maybe set to true if production
+      PreferredMaintenanceWindow: 'Sat:20:00-Sun:04:00'
+      PubliclyAccessible: FALSE
+      ReplicationInstanceClass: !Ref ReplicationInstanceClass
+      ReplicationSubnetGroupIdentifier: !Ref DmsSubnetGroup
+      #  This will attach the default security group
+      VpcSecurityGroupIds: !Ref AWS::NoValue
+
+  ReplicationTask:
+    Type: AWS::DMS::ReplicationTask
+    Condition: CreateReplicationTask
+    Properties:
+      MigrationType: cdc
+      ReplicationInstanceArn: !Ref ReplicationInstance
+      ReplicationTaskIdentifier: !Sub '${AWS::StackName}-task'
+      ResourceIdentifier: !Sub '${AWS::StackName}-task'
+      SourceEndpointArn: !Ref DmsDbEndpoint
+      TargetEndpointArn: !Ref DmsS3Endpoint
+      ReplicationTaskSettings: >
+        {
+          "Logging": {
+            "EnableLogging": true,
+            "LogComponents": [
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "TRANSFORMATION"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_ERROR",
+                "Id": "SOURCE_UNLOAD"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "IO"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_ERROR",
+                "Id": "TARGET_LOAD"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "PERFORMANCE"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_ERROR",
+                "Id": "SOURCE_CAPTURE"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "SORTER"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "REST_SERVER"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "VALIDATOR_EXT"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_ERROR",
+                "Id": "TARGET_APPLY"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_ERROR",
+                "Id": "TASK_MANAGER"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "TABLES_MANAGER"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "METADATA_MANAGER"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "FILE_FACTORY"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "COMMON"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "ADDONS"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "DATA_STRUCTURE"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "COMMUNICATION"
+              },
+              {
+                "Severity": "LOGGER_SEVERITY_DEFAULT",
+                "Id": "FILE_TRANSFER"
+              }
+            ]
+          },
+          "StreamBufferSettings": {
+            "StreamBufferCount": 3,
+            "CtrlStreamBufferSizeInMB": 5,
+            "StreamBufferSizeInMB": 8
+          },
+          "ErrorBehavior": {
+            "FailOnNoTablesCaptured": true,
+            "ApplyErrorUpdatePolicy": "LOG_ERROR",
+            "FailOnTransactionConsistencyBreached": false,
+            "RecoverableErrorThrottlingMax": 1800,
+            "DataErrorEscalationPolicy": "SUSPEND_TABLE",
+            "ApplyErrorEscalationCount": 0,
+            "RecoverableErrorStopRetryAfterThrottlingMax": true,
+            "RecoverableErrorThrottling": true,
+            "ApplyErrorFailOnTruncationDdl": false,
+            "DataTruncationErrorPolicy": "LOG_ERROR",
+            "ApplyErrorInsertPolicy": "LOG_ERROR",
+            "ApplyErrorEscalationPolicy": "LOG_ERROR",
+            "RecoverableErrorCount": -1,
+            "DataErrorEscalationCount": 0,
+            "TableErrorEscalationPolicy": "STOP_TASK",
+            "RecoverableErrorInterval": 5,
+            "ApplyErrorDeletePolicy": "IGNORE_RECORD",
+            "TableErrorEscalationCount": 0,
+            "FullLoadIgnoreConflicts": true,
+            "DataErrorPolicy": "LOG_ERROR",
+            "TableErrorPolicy": "SUSPEND_TABLE"
+          },
+          "TTSettings": {
+            "TTS3Settings": null,
+            "TTRecordSettings": null,
+            "EnableTT": false
+          },
+          "FullLoadSettings": {
+            "CommitRate": 10000,
+            "StopTaskCachedChangesApplied": false,
+            "StopTaskCachedChangesNotApplied": false,
+            "MaxFullLoadSubTasks": 8,
+            "TransactionConsistencyTimeout": 600,
+            "CreatePkAfterFullLoad": false,
+            "TargetTablePrepMode": "DO_NOTHING"
+          },
+          "TargetMetadata": {
+            "ParallelApplyBufferSize": 0,
+            "ParallelApplyQueuesPerThread": 0,
+            "ParallelApplyThreads": 0,
+            "TargetSchema": "",
+            "InlineLobMaxSize": 0,
+            "ParallelLoadQueuesPerThread": 0,
+            "SupportLobs": true,
+            "LobChunkSize": 0,
+            "TaskRecoveryTableEnabled": false,
+            "ParallelLoadThreads": 0,
+            "LobMaxSize": 32,
+            "BatchApplyEnabled": false,
+            "FullLobMode": false,
+            "LimitedSizeLobMode": true,
+            "LoadMaxFileSize": 0,
+            "ParallelLoadBufferSize": 0
+          },
+          "BeforeImageSettings": null,
+          "ControlTablesSettings": {
+            "historyTimeslotInMinutes": 5,
+            "HistoryTimeslotInMinutes": 5,
+            "StatusTableEnabled": true,
+            "SuspendedTablesTableEnabled": true,
+            "HistoryTableEnabled": true,
+            "ControlSchema": "control_tables",
+            "FullLoadExceptionTableEnabled": false
+          },
+          "LoopbackPreventionSettings": null,
+          "CharacterSetSettings": null,
+          "FailTaskWhenCleanTaskResourceFailed": false,
+          "ChangeProcessingTuning": {
+            "StatementCacheSize": 50,
+            "CommitTimeout": 1,
+            "BatchApplyPreserveTransaction": true,
+            "BatchApplyTimeoutMin": 1,
+            "BatchSplitSize": 0,
+            "BatchApplyTimeoutMax": 30,
+            "MinTransactionSize": 1000,
+            "MemoryKeepTime": 60,
+            "BatchApplyMemoryLimit": 500,
+            "MemoryLimitTotal": 1024
+          },
+          "ChangeProcessingDdlHandlingPolicy": {
+            "HandleSourceTableDropped": true,
+            "HandleSourceTableTruncated": true,
+            "HandleSourceTableAltered": true
+          }
+        }
+      TableMappings: !Sub
+        - >
+          {
+              "rules": [
+                  {
+                      "rule-type": "selection",
+                      "rule-id": "0",
+                      "rule-name": "select-all",
+                      "object-locator": {
+                          "schema-name": "${DatabaseSchema}",
+                          "table-name": "%"
+                      },
+                      "rule-action": "include",
+                      "filters": []
+                  },
+                  {
+                      "rule-type": "transformation",
+                      "rule-id": "12",
+                      "rule-name": "add-trx-seq",
+                      "rule-target": "column",
+                      "object-locator": {
+                          "schema-name": "%",
+                          "table-name": "%"
+                      },
+                      "rule-action": "add-column",
+                      "value": "trx_seq",
+                      "expression": "$AR_H_CHANGE_SEQ",
+                      "data-type": {
+                          "type": "string",
+                          "length": 50
+                      }
+                  },
+                  {
+                      "rule-type": "transformation",
+                      "rule-id": "14",
+                      "rule-name": "add-hudi-deleted",
+                      "rule-target": "column",
+                      "object-locator": {
+                          "schema-name": "%",
+                          "table-name": "%"
+                      },
+                      "rule-action": "add-column",
+                      "value": "_hoodie_is_deleted",
+                      "expression": "CASE WHEN $AR_H_OPERATION = 'DELETE' THEN TRUE ELSE FALSE END",
+                      "data-type": {
+                          "type": "boolean"
+                      }
+                  },
+                  {
+                      "rule-type": "post-processing",
+                      "rule-id": "20",
+                      "rule-name": "add-tags",
+                      "rule-action": "add-tag",
+                      "object-locator": {
+                          "schema-name": "%",
+                          "table-name": "%"
+                      },
+                      "tag-set": [
+                        {
+                          "key": "source_dbname",
+                          "value": "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:dbname}}"
+                        },
+                        {
+                          "key": "source_endpoint",
+                          "value": "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:host}}"
+                        },
+                        {
+                         "key": "schema_name",
+                         "value": "${SCHEMA_NAME}"
+                        },
+                        {
+                          "key": "table_name",
+                          "value": "${TABLE_NAME}"
+                        },
+                        {
+                          "key": "glue_table_name",
+                          "value": "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:dbname}}_${SCHEMA_NAME}_${TABLE_NAME}"
+                        },
+                        {
+                           "key": "glue_db_name",
+                           "value": "${GlueDatabaseName}"
+                        }
+                      ]
+                  }
+              ]
+          }
+        - TABLE_NAME: '${table-name}'
+          SCHEMA_NAME: '${schema-name}'
