@@ -7,11 +7,14 @@ Parameters:
   VpcSubnetIds:
     Type: String
     Description: >
+      * Required *
       Comma separated list of two existing private subnets this stack will run in.
+      eg: subnet-aaaaaaaa,subnet-bbbbbbbb
 
   DatabaseSecret:
     Type: String
     Description: >
+      * Required *
       The AWS Secrets Manager secret that contains the database info, the following properties are expected:
         {
           "username": "<username>",
@@ -21,7 +24,6 @@ Parameters:
           "port": <db port>,
           "dbname": "<db name>"
         }
-
 
   DatabaseSchema:
     Type: String
@@ -47,12 +49,12 @@ Parameters:
 
   ReplicationInstanceClass:
     Type: String
-    Description: The replication instance class
-    Default: dms.r5.large
+    Description: The replication instance class, adjust based on your use case
+    Default: dms.t3.micro
 
   ReplicationInstanceStorage:
     Type: Number
-    Description: The size (in GB) of the replication instance local storage
+    Description: The size (in GB) of the replication instance local storage, adjust based on your use case
     Default: 100
 
   GlueDatabaseName:
@@ -62,13 +64,36 @@ Parameters:
 
   CreateReplicationTask:
     Type: String
-    Description: Whether to create the replication instance and task or not, can be set to FALSE in order to reduce running infrastructure
+    Description: >
+      Whether to create the replication instance and task or not, set to FALSE by default in order to reduce running infrastructure
+      * Recommendation: Set this to TRUE and update the stack after it has been successfully deployed with this set to FALSE
+    AllowedValues: [ 'TRUE', 'FALSE' ]
+    Default: 'FALSE'
+
+  IncrementalSchedule:
+    Type: String
+    Description: The schedule expression for the Hudi incremental jobs
+    Default: rate(2 hours)
+    AllowedPattern: (rate|cron)\(.*\)
+
+  # For more information about EMR IAM roles: https://docs.aws.amazon.com/emr/latest/ManagementGuide/emr-iam-roles.html
+  EmrServiceRole:
+    Type: String
+    Default: "EMR_DefaultRole"
+    Description: Service role for EMR clusters
+
+  DeployExampleConfigs:
+    Type: String
     AllowedValues: [ 'TRUE', 'FALSE' ]
     Default: 'TRUE'
+    Description: >
+      Deploys example pipeline configurations in DynamoDB for a Postgresql hammerdb source
+      for more about Hammerdb: https://www.hammerdb.com/about.html
 
 Conditions:
   SslCaVerification: !Not [!Equals [ !Ref DmsDbCertificateArn, '' ]]
   CreateReplicationTask: !Equals [ !Ref CreateReplicationTask, 'TRUE' ]
+  DeployExampleConfigs: !Equals [ !Ref DeployExampleConfigs, 'TRUE' ]
 
 Resources:
   DmsSubnetGroup:
@@ -173,7 +198,6 @@ Resources:
                   - s3:*Object*
                 Resource:
                   - !Join [ '/', [ !GetAtt RawDataBucket.Arn, !Ref AWS::StackName ]]
-                  - !Join [ '/', [ !GetAtt RawDataBucket.Arn, !Ref AWS::StackName, '' ]]
                   - !Join [ '/', [ !GetAtt RawDataBucket.Arn, !Ref AWS::StackName, '*' ]]
 
   DmsS3Endpoint:
@@ -184,7 +208,7 @@ Resources:
       ResourceIdentifier: !Sub '${AWS::StackName}-s3-endpoint'
       S3Settings:
         BucketName: !Ref RawDataBucket
-        BucketFolder: !Sub '${AWS::StackName}/'
+        BucketFolder: !Sub '${AWS::StackName}/{{resolve:secretsmanager:${DatabaseSecret}:SecretString:dbname}}/'
         ServiceAccessRoleArn: !GetAtt DmsS3EndpointRole.Arn
         CompressionType: gzip
       ExtraConnectionAttributes: !Ref DmsS3ExtraConnectionAttributes
@@ -198,7 +222,7 @@ Resources:
       AllocatedStorage: !Ref ReplicationInstanceStorage
       AllowMajorVersionUpgrade: FALSE
       AutoMinorVersionUpgrade: TRUE
-      EngineVersion: 3.4.7
+      EngineVersion: 3.4.6
       #  This will use the default aws managed dms encryption key
       KmsKeyId: !Ref AWS::NoValue
       MultiAZ: FALSE  # Maybe set to true if production
@@ -213,7 +237,7 @@ Resources:
     Type: AWS::DMS::ReplicationTask
     Condition: CreateReplicationTask
     Properties:
-      MigrationType: cdc
+      MigrationType: full-load-and-cdc
       ReplicationInstanceArn: !Ref ReplicationInstance
       ReplicationTaskIdentifier: !Sub '${AWS::StackName}-task'
       ResourceIdentifier: !Sub '${AWS::StackName}-task'
@@ -481,3 +505,411 @@ Resources:
           }
         - TABLE_NAME: '${table-name}'
           SCHEMA_NAME: '${schema-name}'
+
+  EmrEc2Policy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy to attach to EMR EC2 JobFlow roles
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: ResourceStar
+            Effect: Allow
+            Action:
+              - ec2:Describe*
+              - elasticmapreduce:Describe*
+              - elasticmapreduce:ListBootstrapActions
+              - elasticmapreduce:ListClusters
+              - elasticmapreduce:ListInstanceGroups
+              - elasticmapreduce:ListInstances
+              - elasticmapreduce:ListSteps
+              - cloudwatch:*
+              - s3:GetBucketLocation
+              - s3:ListAllMyBuckets*
+              - glue:*Get*
+              - lakeformation:GetDataAccess
+              - lakeformation:GetMetadataAccess
+            Resource: '*'
+          - Sid: ListAll
+            Effect: Allow
+            Action:
+              - s3:ListAllMybuckets
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::*'
+          - Sid: S3ListAndRead
+            Effect: Allow
+            Action:
+              - s3:List*
+              - s3:Get*
+            Resource:
+              - !GetAtt RawDataBucket.Arn
+              - !GetAtt CuratedDataBucket.Arn
+              - !Join [ '/', [ !GetAtt RawDataBucket.Arn, '*' ] ]
+              - !Join [ '/', [ !GetAtt CuratedDataBucket.Arn, '*' ] ]
+              - !Sub 'arn:${AWS::Partition}:s3:::aws-logs-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:s3:::aws-logs-${AWS::AccountId}-${AWS::Region}/*'
+          - Sid: S3ObjectAccess
+            Effect: Allow
+            Action:
+              - s3:*Object*
+            Resource:
+              - !Join [ '/', [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName ] ]
+              - !Join [ '/', [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName, '' ] ]
+              - !Join [ '/', [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName, '*' ] ]
+              - !Sub 'arn:${AWS::Partition}:s3:::aws-logs-${AWS::AccountId}-${AWS::Region}/elasticmapreduce/${AWS::StackName}/*'
+              - !Sub 'arn:${AWS::Partition}:s3:::aws-logs-${AWS::AccountId}-${AWS::Region}/elasticmapreduce/${AWS::StackName}'
+          - Sid: GlueAccountLevel
+            Effect: Allow
+            Action:
+              - glue:CreateTable
+              - glue:UpdateTable
+              - glue:DeleteTable
+              - glue:CreatePartition
+              - glue:BatchCreatePartition
+              - glue:UpdatePartition
+              - glue:DeletePartition
+              - glue:BatchDeletePartition
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+              - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${GlueDatabaseName}'
+              - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${GlueDatabaseName}/*'
+              - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:tableVersion/${GlueDatabaseName}/*'
+
+  EmrEc2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [ "ec2.amazonaws.com" ]
+            },
+            "Action": [ "sts:AssumeRole" ]
+          }
+        ]
+      }
+      Description: Role for EMR EC2 instances
+      ManagedPolicyArns:
+        - !Ref EmrEc2Policy
+      MaxSessionDuration: 43200
+
+  LakeFormationLocationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [ "lakeformation.amazonaws.com" ]
+            },
+            "Action": [ "sts:AssumeRole" ]
+          }
+        ]
+      }
+      Description: Service role for LakeFormation
+      MaxSessionDuration: 43200
+      Policies:
+        - PolicyName: LakeFormation
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ListAll
+                Effect: Allow
+                Action:
+                  - s3:ListAllMybuckets
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::*'
+              - Sid: ListBucket
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt CuratedDataBucket.Arn
+              - Sid: S3ObjectAccess
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Join ["/", [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName, '*' ] ]
+                  - !Join [ '/', [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName ] ]
+
+  CuratedLakeLocationResource:
+    Type: AWS::LakeFormation::Resource
+    DependsOn: LakeFormationLocationRole
+    Properties:
+      ResourceArn: !Join [ "/", [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName, !Ref GlueDatabaseName ] ]
+      # ServiceLinkedRole does not properly delete using CloudFormation so using a traditional IAM role
+      UseServiceLinkedRole: FALSE
+      RoleArn: !GetAtt LakeFormationLocationRole.Arn
+
+  EmrEc2CuratedDbPermissions:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn: EmrEc2Role
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt EmrEc2Role.Arn
+      Permissions:
+        - ALL
+      Resource:
+        DatabaseResource:
+          CatalogId: !Ref AWS::AccountId
+          Name: !Ref GlueDatabaseName
+
+  EmrEc2CuratedTargetLocationPermissions:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn: CuratedLakeLocationResource
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt EmrEc2Role.Arn
+      Permissions:
+        - DATA_LOCATION_ACCESS
+      Resource:
+        DataLocationResource:
+          CatalogId: !Ref AWS::AccountId
+          S3Resource: !Join [ "/", [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName, !Ref GlueDatabaseName ] ]
+
+  EmrEc2CuratedTablePermissions:
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt EmrEc2Role.Arn
+      Permissions:
+        - ALL
+      Resource:
+        TableResource:
+          CatalogId: !Ref AWS::AccountId
+          DatabaseName: !Ref GlueDatabaseName
+          TableWildcard: {}
+
+  EmrEc2InstanceProfile:
+    DependsOn: EmrEc2Role
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Ref EmrEc2Role
+      Roles:
+        - !Ref EmrEc2Role
+
+  RuntimeSnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub '${AWS::StackName}-Runtime-SNS'
+
+  RuntimeSnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Sid: AllowServices
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+                - cloudwatch.amazonaws.com
+            Action: 'sns:Publish'
+            Resource:
+              - !Ref RuntimeSnsTopic
+      Topics:
+        - !Ref RuntimeSnsTopic
+
+  EmrStepFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [ "states.amazonaws.com" ]
+            },
+            "Action": [ "sts:AssumeRole" ]
+          }
+        ]
+      }
+      Description: Role for EMR pipeline state machine
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEMRFullAccessPolicy_v2
+      MaxSessionDuration: 43200
+      Policies:
+        - PolicyName: Inline
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: PassRole
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !GetAtt EmrEc2Role.Arn
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${EmrServiceRole}'
+              - Sid: AllowSns
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref RuntimeSnsTopic
+
+  ConfigTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: identifier
+          AttributeType: S
+        - AttributeName: config
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: identifier
+          KeyType: HASH
+        - AttributeName: config
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: TRUE
+
+  EmrStepFunction:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: s3://aws-dms-to-hudi-example/artifacts/stepfunctions/emr1.json
+      DefinitionSubstitutions:
+        EmrEc2SubnetIdA: !Select [ 0, !Split [ ',', !Ref VpcSubnetIds ] ]
+        EmrEc2SubnetIdB: !Select [ 1, !Split [ ',', !Ref VpcSubnetIds ] ]
+        EmrLogUri: !Sub 's3n://aws-logs-${AWS::AccountId}-${AWS::Region}/elasticmapreduce/${AWS::StackName}/'
+        EmrServiceRole: !Ref EmrServiceRole
+        EmrJobFlowRole: !Ref EmrEc2Role
+        RuntimeSnsTopicArn: !Ref RuntimeSnsTopic
+        Region: !Ref AWS::Region
+      Role: !GetAtt EmrStepFunctionRole.Arn
+      Type: STANDARD
+
+  LaunchEmrPipelineLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        "Version": "2012-10-17"
+        "Statement":
+          - Effect: Allow
+            Principal:
+              Service: [ "lambda.amazonaws.com" ]
+            Action: [ "sts:AssumeRole" ]
+      Description: Role for lambda to launch emr step function
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LaunchPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: DynamoDB
+                Effect: Allow
+                Action:
+                  - dynamodb:Describe*
+                  - dynamodb:Query
+                  - dynamodb:*GetItem*
+                Resource: !GetAtt ConfigTable.Arn
+              - Sid: StepFunction
+                Effect: Allow
+                Action:
+                  - states:*Execution*
+                  - states:Describe*
+                Resource:
+                  - !Ref EmrStepFunction
+                  - !Join [':', [
+                      !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution',
+                      !GetAtt EmrStepFunction.Name,
+                      '*'
+                    ]]
+              - Sid: AllowSns
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref RuntimeSnsTopic
+
+  LaunchEmrPipelineLambda:
+    Type: AWS::Serverless::Function
+    DependsOn: LaunchEmrPipelineLambdaRole
+    Properties:
+      CodeUri: s3://aws-dms-to-hudi-example/artifacts/lambdas/launch_hudi.zip
+      Description: Lambda Function for launching the EMR step function
+      Environment:
+        Variables:
+          STEPFUNCTION_ARN: !Ref EmrStepFunction
+          CONFIG_TABLE: !Ref ConfigTable
+          LOG_LEVEL: INFO
+          POWERTOOLS_SERVICE_NAME: LaunchEmrSfn
+          CURATED_LAKE_S3URI: !Join [ '', [ 's3://', !Ref CuratedDataBucket, '/', !Ref AWS::StackName ] ]
+          RAW_LAKE_S3URI: !Join [ '', [ 's3://', !Ref RawDataBucket, '/', !Ref AWS::StackName ] ]
+          TOPIC_ARN: !Ref RuntimeSnsTopic
+          GLUE_DATABASE: !Ref GlueDatabaseName
+      Handler: handler.handler
+      Role: !GetAtt LaunchEmrPipelineLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 90
+
+  IncrementalLoadSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Invoke periodic incremental updates of the hudi tables
+      ScheduleExpression: !Ref IncrementalSchedule
+      State: DISABLED
+      Targets:
+        - Arn: !GetAtt LaunchEmrPipelineLambda.Arn
+          Id: !Ref LaunchEmrPipelineLambda
+          Input: !Sub >
+            {
+              "Identifier": "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:dbname}}",
+              "PipelineType": "hudi_upsert"
+            }
+
+  PipelineConfigLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        "Version": "2012-10-17"
+        "Statement":
+          - Effect: Allow
+            Principal:
+              Service: [ "lambda.amazonaws.com" ]
+            Action: [ "sts:AssumeRole" ]
+      Description: Role for lambda to launch emr step function
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LaunchPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: DynamoDB
+                Effect: Allow
+                Action:
+                  - dynamodb:Describe*
+                  - dynamodb:Query
+                  - dynamodb:*Item*
+                Resource: !GetAtt ConfigTable.Arn
+
+  PipelineConfigLambda:
+    Type: AWS::Serverless::Function
+    DependsOn: PipelineConfigLambdaRole
+    Properties:
+      CodeUri: s3://aws-dms-to-hudi-example/artifacts/lambdas/deploy_pipeline_configs.zip
+      Description: Lambda Function for deploying pipeline configs into DynamoDB
+      Environment:
+        Variables:
+          CONFIG_TABLE: !Ref ConfigTable
+          LOG_LEVEL: INFO
+          POWERTOOLS_SERVICE_NAME: PipelineConfigLambda
+      Handler: handler.handler
+      Role: !GetAtt PipelineConfigLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 90
+
+  DeployExampleConfig:
+    Type: 'Custom::DeployExampleConfig'
+    Condition: DeployExampleConfigs
+    DependsOn: PipelineConfigLambda
+    Properties:
+      ServiceToken: !GetAtt PipelineConfigLambda.Arn
+      DeployExampleConfigs: 'TRUE'
