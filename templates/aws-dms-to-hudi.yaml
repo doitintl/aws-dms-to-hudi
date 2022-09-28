@@ -90,14 +90,52 @@ Parameters:
       Deploys example pipeline configurations in DynamoDB for a Postgresql hammerdb source
       for more about Hammerdb: https://www.hammerdb.com/about.html
 
+  CreateDmsVpcRole:
+    Type: String
+    Description: >
+      If DMS has not been previously used in this account, you will need to create the dms-vpc-role or DMS resources in this stack will fail
+      With error: The IAM Role arn:aws:iam::${AccountId}:role/dms-vpc-role is not configured properly.
+      This can be done through the GUI by manually configuring a Subnet group, or
+      by Parameter CreateDmsVpcRole=TRUE in this template. If the role already exists, just set this to FALSE, otherwise TRUE
+    AllowedValues: [ 'TRUE', 'FALSE' ]
+    Default: 'FALSE'
+
 Conditions:
   SslCaVerification: !Not [!Equals [ !Ref DmsDbCertificateArn, '' ]]
   CreateReplicationTask: !Equals [ !Ref CreateReplicationTask, 'TRUE' ]
   DeployExampleConfigs: !Equals [ !Ref DeployExampleConfigs, 'TRUE' ]
+  CreateDmsVpcRole: !Equals [ !Ref CreateDmsVpcRole, 'TRUE' ]
 
 Resources:
+  #  If DMS has not been previously used in this account, you will need to create the dms-vpc-role or DMS resources in this stack will fail
+  #  With error: The IAM Role arn:aws:iam::${AccountId}:role/dms-vpc-role is not configured properly.
+  #  This can be done through the GUI by manually configuring a Subnet group, or
+  #  by Parameter CreateDmsVpcRole=TRUE in this template. If the role already exists, just set this to FALSE
+  DmsVpcRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    Condition: CreateDmsVpcRole
+    Properties:
+      RoleName: dms-vpc-role
+      AssumeRolePolicyDocument: {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [ "dms.amazonaws.com" ]
+            },
+            "Action": [ "sts:AssumeRole" ]
+          }
+        ]
+      }
+      Description: VPC Service role for DMS
+      ManagedPolicyArns:
+        - !Sub 'arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole'
+
   DmsSubnetGroup:
     Type: AWS::DMS::ReplicationSubnetGroup
+    DependsOn: DmsVpcRole
     Properties:
       ReplicationSubnetGroupDescription: Replication group for private subnets A and B
       SubnetIds:
@@ -106,6 +144,7 @@ Resources:
 
   DmsDbEndpoint:
     Type: AWS::DMS::Endpoint
+    DependsOn: DmsVpcRole
     Properties:
       ResourceIdentifier: !Sub '${AWS::StackName}-db-endpoint'
       CertificateArn: !If [ SslCaVerification, !Ref DmsDbCertificateArn, !Ref AWS::NoValue ]

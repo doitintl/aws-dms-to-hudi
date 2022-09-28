@@ -25,7 +25,7 @@ Resources are deployed using Cloudformation, some prerequisites are required fir
 
 ## Deploying the stack
 
-* Fire up the AWS Console, then [click this link](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateUrl=https%3A%2F%2Faws-dms-to-hudi-example.s3.amazonaws.com%2Fartifacts%2Faws-dms-to-hudi.yaml&stackName=aws-dms-to-hudi-example)
+* Fire up the AWS Console, then [click this link](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateUrl=https%3A%2F%2Faws-dms-to-hudi-example.s3.amazonaws.com%2Fartifacts%2Faws-dms-to-hudi.yaml&stackName=dms-to-hudi)
 * Change the stack name if you'd like
   * **NOTE**: In general, the AWS resources are dynamically named based on the stack name and logical resource name 
 * Set the parameters, some parameters are required:
