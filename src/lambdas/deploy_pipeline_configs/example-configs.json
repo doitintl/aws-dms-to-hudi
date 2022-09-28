@@ -1,0 +1,153 @@
+[
+    {
+        "config": "pipeline::hudi_bulk_insert",
+        "identifier": "hammerdb",
+        "emr_config": {
+            "release_label": "emr-6.7.0",
+            "master": {
+                "instance_type": "m5.xlarge"
+            },
+            "worker": {
+                "count": "8",
+                "instance_type": "r5.2xlarge"
+            },
+            "step_parallelism": 4
+        }
+    },
+    {
+        "config": "pipeline::hudi_upsert",
+        "identifier": "hammerdb",
+        "emr_config": {
+            "release_label": "emr-6.7.0",
+            "master": {
+                "instance_type": "m5.xlarge"
+            },
+            "worker": {
+                "count": "4",
+                "instance_type": "r5.2xlarge"
+            },
+            "step_parallelism": 4
+        }
+    },
+    {
+        "config": "table::public.customer",
+        "identifier": "hammerdb",
+        "hudi_config": {
+            "record_key": "c_w_id,c_d_id,c_id",
+            "source_ordering_field": "trx_seq",
+            "is_partitioned": false
+        },
+        "enabled": true
+    },
+    {
+        "config": "table::public.district",
+        "identifier": "hammerdb",
+        "hudi_config": {
+            "record_key": "d_w_id,d_id",
+            "source_ordering_field": "trx_seq",
+            "is_partitioned": false
+        },
+        "enabled": true
+    },
+    {
+        "config": "table::public.item",
+        "identifier": "hammerdb",
+        "enabled": true,
+        "hudi_config": {
+            "record_key": "i_id",
+            "source_ordering_field": "trx_seq",
+            "is_partitioned": false
+        }
+    },
+    {
+        "config": "table::public.new_order",
+        "identifier": "hammerdb",
+        "enabled": true,
+        "hudi_config": {
+            "record_key": "no_w_id,no_d_id,no_o_id",
+            "source_ordering_field": "trx_seq",
+            "is_partitioned": false
+        }
+    },
+    {
+        "config": "table::public.order_line",
+        "identifier": "hammerdb",
+        "enabled": true,
+        "hudi_config": {
+            "record_key": "ol_w_id,ol_d_id,ol_o_id,ol_number",
+            "source_ordering_field": "trx_seq",
+            "is_partitioned": true,
+            "partition_path": "ol_w_id",
+            "partition_extractor_class": "org.apache.hudi.hive.MultiPartKeysValueExtractor"
+        },
+        "spark_conf": {
+            "hudi_bulk_insert": {
+                "spark.executor.cores": "2",
+                "spark.executor.memory": "8g",
+                "spark.executor.heartbeatInterval": "90s",
+                "spark.network.timeout": "900s",
+                "spark.dynamicAllocation.enabled": "false",
+                "spark.executor.instances": "12"
+            },
+            "hudi_upsert": {
+                "spark.executor.cores": "2",
+                "spark.executor.memory": "6g",
+                "spark.executor.heartbeatInterval": "30s",
+                "spark.network.timeout": "600s",
+                "spark.dynamicAllocation.minExecutors": "2",
+                "spark.dynamicAllocation.maxExecutors": "12"
+            }
+        }
+    },
+    {
+        "config": "table::public.orders",
+        "identifier": "hammerdb",
+        "enabled": true,
+        "hudi_config": {
+            "record_key": "o_w_id,o_d_id,o_id",
+            "source_ordering_field": "trx_seq",
+            "is_partitioned": false
+        }
+    },
+    {
+        "config": "table::public.stock",
+        "identifier": "hammerdb",
+        "enabled": true,
+        "hudi_config": {
+            "record_key": "s_i_id,s_w_id",
+            "source_ordering_field": "trx_seq",
+            "is_partitioned": false,
+            "partition_path": "s_w_id",
+            "partition_extractor_class": "org.apache.hudi.hive.MultiPartKeysValueExtractor",
+            "table_type": "MERGE_ON_READ"
+        },
+        "spark_conf": {
+            "hudi_bulk_insert": {
+                "spark.executor.cores": "2",
+                "spark.executor.memory": "6g",
+                "spark.executor.heartbeatInterval": "90s",
+                "spark.network.timeout": "900s",
+                "spark.dynamicAllocation.enabled": "false",
+                "spark.executor.instances": "10"
+            },
+            "hudi_upsert": {
+                "spark.executor.cores": "2",
+                "spark.executor.memory": "6g",
+                "spark.executor.heartbeatInterval": "30s",
+                "spark.network.timeout": "600s",
+                "spark.dynamicAllocation.minExecutors": "2",
+                "spark.dynamicAllocation.maxExecutors": "8"
+            }
+        }
+    },
+    {
+        "config": "table::public.warehouse",
+        "identifier": "hammerdb",
+        "enabled": true,
+        "hudi_config": {
+            "record_key": "w_id",
+            "source_ordering_field": "trx_seq",
+            "is_partitioned": false
+        }
+    }
+]
