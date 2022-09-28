@@ -133,31 +133,6 @@ Resources:
       ManagedPolicyArns:
         - !Sub 'arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole'
 
-  DmsSubnetGroup:
-    Type: AWS::DMS::ReplicationSubnetGroup
-    DependsOn: DmsVpcRole
-    Properties:
-      ReplicationSubnetGroupDescription: Replication group for private subnets A and B
-      SubnetIds:
-        - !Select [ 0, !Split [ ',', !Ref VpcSubnetIds ] ]
-        - !Select [ 1, !Split [ ',', !Ref VpcSubnetIds ] ]
-
-  DmsDbEndpoint:
-    Type: AWS::DMS::Endpoint
-    DependsOn: DmsVpcRole
-    Properties:
-      ResourceIdentifier: !Sub '${AWS::StackName}-db-endpoint'
-      CertificateArn: !If [ SslCaVerification, !Ref DmsDbCertificateArn, !Ref AWS::NoValue ]
-      DatabaseName: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:dbname}}'
-      EndpointType: source
-      EngineName: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:engine}}'
-      ExtraConnectionAttributes: !Ref DmsDbExtraConnectionAttributes
-      Password: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
-      Port: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:port}}'
-      ServerName: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:host}}'
-      SslMode: !If [ SslCaVerification, 'verify-ca', 'require' ]
-      Username: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}'
-
   RawDataBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -197,6 +172,31 @@ Resources:
           - ObjectOwnership: BucketOwnerPreferred
       VersioningConfiguration:
         Status: Suspended                          # Warning: Should be enabled if deployed in Production
+
+  DmsSubnetGroup:
+    Type: AWS::DMS::ReplicationSubnetGroup
+    DependsOn: CuratedDataBucket
+    Properties:
+      ReplicationSubnetGroupDescription: Replication group for private subnets A and B
+      SubnetIds:
+        - !Select [ 0, !Split [ ',', !Ref VpcSubnetIds ] ]
+        - !Select [ 1, !Split [ ',', !Ref VpcSubnetIds ] ]
+
+  DmsDbEndpoint:
+    Type: AWS::DMS::Endpoint
+    DependsOn: CuratedDataBucket
+    Properties:
+      ResourceIdentifier: !Sub '${AWS::StackName}-db-endpoint'
+      CertificateArn: !If [ SslCaVerification, !Ref DmsDbCertificateArn, !Ref AWS::NoValue ]
+      DatabaseName: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:dbname}}'
+      EndpointType: source
+      EngineName: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:engine}}'
+      ExtraConnectionAttributes: !Ref DmsDbExtraConnectionAttributes
+      Password: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      Port: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:port}}'
+      ServerName: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:host}}'
+      SslMode: !If [ SslCaVerification, 'verify-ca', 'require' ]
+      Username: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}'
 
   DmsS3EndpointRole:
     Type: AWS::IAM::Role
