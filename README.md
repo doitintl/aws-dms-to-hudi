@@ -22,6 +22,8 @@ Resources are deployed using Cloudformation, some prerequisites are required fir
     }
     ```   
 * Two private vpc subnets are required in order to run AWS DMS and Amazon EMR resources, these subnets should have connectivity to the database server
+* [LakeFormation Admin permissions configured](https://catalog.us-east-1.prod.workshops.aws/v2/workshops/78572df7-d2ee-4f78-b698-7cafdb55135d/en-US/lakeformation-basics/datalake-administrator)
+* An existing AWS Glue Database managed by LakeFormation
 
 ## Deploying the stack
 
