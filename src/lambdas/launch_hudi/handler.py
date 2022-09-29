@@ -67,7 +67,7 @@ def get_hudi_configs(table_name, table_config, pipeline_type):
     record_key = table_config['record_key']
     precombine_field = table_config['source_ordering_field']
 
-    source_s3uri = os.path.join(raw_lake_uri, table_name.replace('_', '/', 3), '')
+    source_s3uri = os.path.join(raw_lake_uri, table_name.replace('_', '/', 2), '')
 
     hudi_conf = {
         'hoodie.clustering.inline': 'true',
