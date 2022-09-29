@@ -63,11 +63,11 @@ def get_configs(identifier, pipeline_type):
     return configs
 
 
-def get_hudi_configs(identifier, table_name, table_config, pipeline_type):
+def get_hudi_configs(table_name, table_config, pipeline_type):
     record_key = table_config['record_key']
     precombine_field = table_config['source_ordering_field']
 
-    source_s3uri = os.path.join(raw_lake_uri, identifier, table_name.replace('_', '/', 2), '')
+    source_s3uri = os.path.join(raw_lake_uri, table_name.replace('_', '/', 3), '')
 
     hudi_conf = {
         'hoodie.clustering.inline': 'true',
@@ -129,7 +129,7 @@ def generate_steps(identifier, configs, pipeline_type):
         config = configs['StepConfigs'][table]
         logger.debug(json.dumps(config, indent=4))
         if 'enabled' in config and config['enabled'] is True:
-            table_name = table.replace('.', '_')
+            table_name = f'{identifier}_{table.replace(".", "_")}'
 
             if 'spark_conf' in config and pipeline_type in config['spark_conf']:
                 for k, v in config['spark_conf'][pipeline_type].items():
@@ -141,7 +141,7 @@ def generate_steps(identifier, configs, pipeline_type):
                 '--source-class', 'org.apache.hudi.utilities.sources.ParquetDFSSource',
                 '--enable-sync',
                 '--target-table', table_name,
-                '--target-base-path', os.path.join(curated_lake_uri, identifier, table_name, ''),
+                '--target-base-path', os.path.join(curated_lake_uri, glue_database, table_name, ''),
                 '--source-ordering-field', config['hudi_config']['source_ordering_field']
             ])
 
@@ -159,7 +159,7 @@ def generate_steps(identifier, configs, pipeline_type):
             elif 'op' in config['hudi_config']:
                 spark_submit_args.extend(['--op', config['hudi_config']['op']])
 
-            hudi_configs = get_hudi_configs(identifier, table_name, config['hudi_config'], pipeline_type)
+            hudi_configs = get_hudi_configs(table_name, config['hudi_config'], pipeline_type)
             for k, v in hudi_configs.items():
                 spark_submit_args.extend(['--hoodie-conf', f'{k}={v}'])
 

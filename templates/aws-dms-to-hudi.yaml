@@ -59,8 +59,8 @@ Parameters:
 
   GlueDatabaseName:
     Type: String
-    Description: The name of the glue database
-    Default: 'default'
+    Description: The name of the glue database to create
+    Default: 'hudi_lake_example'
 
   CreateReplicationTask:
     Type: String
@@ -100,11 +100,19 @@ Parameters:
     AllowedValues: [ 'TRUE', 'FALSE' ]
     Default: 'FALSE'
 
+  UseLakeFormation:
+    Type: String
+    Description: >
+      If LakeFormation has been configured in this AWS Account, set this to TRUE in order to configure LakeFormation for this stack
+    AllowedValues: [ 'TRUE', 'FALSE' ]
+    Default: 'FALSE'
+
 Conditions:
   SslCaVerification: !Not [!Equals [ !Ref DmsDbCertificateArn, '' ]]
   CreateReplicationTask: !Equals [ !Ref CreateReplicationTask, 'TRUE' ]
   DeployExampleConfigs: !Equals [ !Ref DeployExampleConfigs, 'TRUE' ]
   CreateDmsVpcRole: !Equals [ !Ref CreateDmsVpcRole, 'TRUE' ]
+  UseLakeFormation: !Equals [ !Ref UseLakeFormation, 'TRUE' ]
 
 Resources:
   #  If DMS has not been previously used in this account, you will need to create the dms-vpc-role or DMS resources in this stack will fail
@@ -132,6 +140,14 @@ Resources:
       Description: VPC Service role for DMS
       ManagedPolicyArns:
         - !Sub 'arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole'
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Description: Data Lake database
+        Name: !Ref GlueDatabaseName
 
   RawDataBucket:
     Type: AWS::S3::Bucket
@@ -592,6 +608,7 @@ Resources:
               - s3:*Object*
             Resource:
               - !Join [ '/', [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName ] ]
+              - !Join [ '', [ !GetAtt CuratedDataBucket.Arn, '/', !Ref AWS::StackName, '_$folder$' ] ]
               - !Join [ '/', [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName, '' ] ]
               - !Join [ '/', [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName, '*' ] ]
               - !Sub 'arn:${AWS::Partition}:s3:::aws-logs-${AWS::AccountId}-${AWS::Region}/elasticmapreduce/${AWS::StackName}/*'
@@ -635,6 +652,7 @@ Resources:
 
   LakeFormationLocationRole:
     Type: AWS::IAM::Role
+    Condition: UseLakeFormation
     Properties:
       AssumeRolePolicyDocument: {
         "Version": "2012-10-17",
@@ -678,7 +696,8 @@ Resources:
 
   CuratedLakeLocationResource:
     Type: AWS::LakeFormation::Resource
-    DependsOn: LakeFormationLocationRole
+    DependsOn: [ CuratedDataBucket, LakeFormationLocationRole ]
+    Condition: UseLakeFormation
     Properties:
       ResourceArn: !Join [ "/", [ !GetAtt CuratedDataBucket.Arn, !Ref AWS::StackName, !Ref GlueDatabaseName ] ]
       # ServiceLinkedRole does not properly delete using CloudFormation so using a traditional IAM role
@@ -687,7 +706,8 @@ Resources:
 
   EmrEc2CuratedDbPermissions:
     Type: AWS::LakeFormation::Permissions
-    DependsOn: EmrEc2Role
+    DependsOn: [ EmrEc2Role, GlueDatabase ]
+    Condition: UseLakeFormation
     Properties:
       DataLakePrincipal:
         DataLakePrincipalIdentifier: !GetAtt EmrEc2Role.Arn
@@ -701,6 +721,7 @@ Resources:
   EmrEc2CuratedTargetLocationPermissions:
     Type: AWS::LakeFormation::Permissions
     DependsOn: CuratedLakeLocationResource
+    Condition: UseLakeFormation
     Properties:
       DataLakePrincipal:
         DataLakePrincipalIdentifier: !GetAtt EmrEc2Role.Arn
@@ -713,6 +734,8 @@ Resources:
 
   EmrEc2CuratedTablePermissions:
     Type: AWS::LakeFormation::Permissions
+    Condition: UseLakeFormation
+    DependsOn: [ EmrEc2Role, GlueDatabase ]
     Properties:
       DataLakePrincipal:
         DataLakePrincipalIdentifier: !GetAtt EmrEc2Role.Arn
