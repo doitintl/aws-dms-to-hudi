@@ -15,7 +15,7 @@ config  (STRING, Sort key)
 
 - *identifier*: This attribute is meant to uniquely identify a group of config records related to a set of pipelines.   
   - ***This must match `{{resolve:secretsmanager:${DatabaseSecret}:SecretString:dbname}}` from the Secret 
-- *config*: This attribute must be one of `[pipeline::hudi_bulk_insert, pipeline::hudi_upsert, pipeline::hudi_continuous, table::<schema.table name>]`.
+- *config*: This attribute must be one of `[pipeline::hudi_bulk_insert, pipeline::hudi_delta, pipeline::hudi_delta_continuous, table::<schema.table name>]`.
 
 #### Item specifics
 
@@ -25,7 +25,7 @@ Using `hammerdb` as our identifier(source database name), here is an example of 
 |identifier|config|
 |----------|------|
 |hammerdb|pipeline::hudi_bulk_insert|
-|hammerdb|pipeline::hudi_upsert|
+|hammerdb|pipeline::hudi_delta|
 |hammerdb|table::public.customer|
 
 
@@ -89,7 +89,7 @@ The attributes are as follows. Some attributes can be omitted, su
     },
     "spark_conf": {                             // [OPTIONAL] this stanza is used to pass spark configurations to the emr job step
                                                 // Any option found here can be set:  https://spark.apache.org/docs/latest/configuration.html#available-properties
-        "<pipeline_type>": {                    // <pipeline type> must be one of: [ hudi_bulk_insert|hudi_upsert|hudi_upsert_continuous ]
+        "<pipeline_type>": {                    // <pipeline type> must be one of: [ hudi_bulk_insert|hudi_delta|hudi_delta_continuous ]
             "<option>": "<value"
         }
     }
@@ -119,7 +119,7 @@ Example record for public.order_line in rdbms_analytics grouping:
             "spark.dynamicAllocation.enabled": "false",
             "spark.executor.instances": "12"
         },
-        "hudi_upsert": {
+        "hudi_delta": {
             "spark.executor.cores": "2",
             "spark.executor.memory": "6g",
             "spark.executor.heartbeatInterval": "30s",
@@ -127,7 +127,7 @@ Example record for public.order_line in rdbms_analytics grouping:
             "spark.dynamicAllocation.minExecutors": "2",
             "spark.dynamicAllocation.maxExecutors": "12"
         },
-        "hudi_upsert_continuous": {
+        "hudi_delta_continuous": {
             "spark.executor.cores": "1",
             "spark.executor.memory": "4g",
             "spark.executor.heartbeatInterval": "30s",

@@ -923,7 +923,7 @@ Resources:
           Input: !Sub >
             {
               "Identifier": "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:dbname}}",
-              "PipelineType": "hudi_upsert"
+              "PipelineType": "hudi_delta"
             }
 
   PipelineConfigLambdaRole:

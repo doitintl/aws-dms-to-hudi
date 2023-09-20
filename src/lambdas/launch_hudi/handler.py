@@ -25,7 +25,7 @@ def munge_configs(items, pipeline_type):
     }
 
     # Check if pipeline type is supported, otherwise raise
-    if pipeline_type not in ['hudi_bulk_insert', 'incremental_hudi', 'continuous_hudi']:
+    if pipeline_type not in ['hudi_bulk_insert', 'hudi_delta', 'hudi_delta_continuous']:
         raise ValueError(f'Operation {pipeline_type} not yet supported.')
 
     for i in items:
@@ -85,7 +85,7 @@ def get_hudi_configs(table_name, table_config, pipeline_type):
     if pipeline_type == 'hudi_bulk_insert':
         hudi_conf['hoodie.datasource.write.operation'] = 'bulk_insert'
         hudi_conf['hoodie.bulkinsert.sort.mode'] = 'PARTITION_SORT'
-    elif pipeline_type.startswith('hudi_upsert'):
+    elif pipeline_type.startswith('hudi_delta'):
         hudi_conf['hoodie.datasource.write.operation'] = 'upsert'
         hudi_conf['hoodie.cleaner.commits.retained'] = '5'
         hudi_conf['hoodie.clean.automatic'] = 'true'
@@ -163,7 +163,7 @@ def generate_steps(identifier, configs, pipeline_type):
             for k, v in hudi_configs.items():
                 spark_submit_args.extend(['--hoodie-conf', f'{k}={v}'])
 
-            if pipeline_type == 'hudi_upsert_continuous':
+            if pipeline_type == 'hudi_delta_continuous':
                 spark_submit_args.extend(['--continuous'])
 
             entry = {
