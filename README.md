@@ -85,7 +85,7 @@ cat example.json
       }
     },
     {
-      "config": "pipeline::hudi_upsert",
+      "config": "pipeline::hudi_delta",
       "identifier": "hammerdb",
       "allowed_concurrent": false,
       "emr_config": {

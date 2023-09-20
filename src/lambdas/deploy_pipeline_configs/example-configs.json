@@ -15,7 +15,7 @@
         }
     },
     {
-        "config": "pipeline::hudi_upsert",
+        "config": "pipeline::hudi_delta",
         "identifier": "hammerdb",
         "emr_config": {
             "release_label": "emr-6.7.0",
@@ -89,7 +89,7 @@
                 "spark.dynamicAllocation.enabled": "false",
                 "spark.executor.instances": "12"
             },
-            "hudi_upsert": {
+            "hudi_delta": {
                 "spark.executor.cores": "2",
                 "spark.executor.memory": "6g",
                 "spark.executor.heartbeatInterval": "30s",
@@ -130,7 +130,7 @@
                 "spark.dynamicAllocation.enabled": "false",
                 "spark.executor.instances": "10"
             },
-            "hudi_upsert": {
+            "hudi_delta": {
                 "spark.executor.cores": "2",
                 "spark.executor.memory": "6g",
                 "spark.executor.heartbeatInterval": "30s",
